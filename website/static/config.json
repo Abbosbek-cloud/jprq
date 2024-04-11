@@ -1,4 +1,4 @@
 {
-  "domain": "jprq.live",
-  "events": "event.jprq.live:4321"
+  "domain": "jprq.app",
+  "events": "event.jprq.app:4321"
 }

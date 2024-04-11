@@ -4,77 +4,83 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
+	"path/filepath"
 	"strconv"
 	"time"
 )
 
-var version = "2.1"
+var version = "2.3"
+
+type Flags struct {
+	debug     bool
+	cname     string
+	subdomain string
+}
+
+func printVersion() {
+	log.Printf("v%s", version)
+	os.Exit(0)
+}
 
 func printHelp() {
-	fmt.Println("Usage: jprq <command> [arguments]\n")
+	fmt.Printf("Usage: jprq <command> [arguments]\n\n")
 	fmt.Println("Commands:")
-	fmt.Println("  auth <token>               Set authentication token from jprq.io/auth")
-	fmt.Println("  tcp <port>                 Start a TCP tunnel on the specified port")
-	fmt.Println("  http <port>                Start an HTTP tunnel on the specified port")
-	fmt.Println("  http <port> -s <subdomain> Start an HTTP tunnel with a custom subdomain")
-	fmt.Println("  http <port> --debug        Debug an HTTP tunnel with Jprq Debugger")
-	fmt.Println("  --help                     Show this help message")
-	fmt.Println("  --version                  Show the version number")
+	fmt.Println("  auth  <token>               Set authentication token from jprq.io/auth")
+	fmt.Println("  tcp   <port>                Start a TCP tunnel on the specified port")
+	fmt.Println("  http  <port>                Start an HTTP tunnel on the specified port")
+	fmt.Println("  http  <port> -s <subdomain> Start an HTTP tunnel with a custom subdomain")
+	fmt.Println("  http  <port> --debug        Debug an HTTP tunnel with Jprq Debugger")
+	fmt.Println("  serve <dir>                 Serve files with built-in Http Server")
+	fmt.Println("  --help                      Show this help message")
+	fmt.Println("  --version                   Show the version number")
 	os.Exit(0)
 }
 
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
-		log.Fatal("no command specified")
+		log.Println("no command specified")
+		printHelp()
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
-	protocol := ""
-
-	switch command {
-	case "auth":
-		handleAuth(args)
-	case "tcp", "http":
-		protocol = command
+	switch os.Args[1] {
 	case "help", "--help":
 		printHelp()
 	case "version", "--version":
 		printVersion()
+	}
+
+	if len(os.Args) < 3 {
+		log.Println("no arg supplied")
+		printHelp()
+	}
+
+	protocol, port := "", 0
+	command, arg := os.Args[1], os.Args[2]
+	flags := parseFlags(os.Args[3:])
+
+	switch command {
+	case "auth":
+		handleAuth(arg)
+	case "serve":
+		protocol, port = handleServe(arg)
+	case "tcp", "http":
+		protocol = command
+		port, _ = strconv.Atoi(arg)
 	default:
 		log.Fatalf("unknown command: %s, jprq --help", command)
 	}
 
-	if len(args) < 1 {
-		log.Fatal("please specify port number, jprq --help")
-	}
-	port, err := strconv.Atoi(args[0])
-	if err != nil {
-		log.Fatalf("port number must be an integer")
-	}
-
-	subdomain := ""
-	var debug bool
-	if len(args) > 2 && args[1] == "-s" {
-		subdomain = validate(args[2])
-		debug = args[len(args)-1] == "--debug"
-	} else if len(args) > 2 && args[2] == "-s" {
-		subdomain = validate(args[3])
-		debug = args[1] == "--debug"
-	} else {
-		debug = args[len(args)-1] == "--debug"
+	if port <= 0 {
+		log.Fatalf("port number must be a positive integer")
 	}
 
 	var conf Config
 	if err := conf.Load(); err != nil {
 		log.Fatal(err)
-	}
-	if !canReachServer(port) {
-		log.Fatalf("error: cannot reach server on port: %d\n", port)
 	}
 
 	fmt.Printf("jprq %s \t press Ctrl+C to quit\n\n", version)
@@ -83,32 +89,37 @@ func main() {
 	client := jprqClient{
 		config:    conf,
 		protocol:  protocol,
-		subdomain: subdomain,
+		subdomain: flags.subdomain,
+		cname:     flags.cname,
 	}
 
-	go client.Start(port, debug)
+	go client.Start(port, flags.debug)
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
 	<-signalChan
 }
 
-func validate(subdomain string) string {
-	subdomainRegex := `^[a-z\d](?:[a-z\d]|-[a-z\d]){0,38}$`
-	if !regexp.MustCompile(subdomainRegex).MatchString(subdomain) {
-		log.Fatalf("error: subdomain must be lowercase & alphanumeric")
+func parseFlags(args []string) Flags {
+	var flags Flags
+	for i, arg := range args {
+		switch arg {
+		case "-d", "-debug", "--debug":
+			flags.debug = true
+		case "-s", "-subdomain", "--subdomain":
+			flags.subdomain = args[i+1]
+		case "-c", "-cname", "--cname":
+			flags.cname = args[i+1]
+		}
 	}
-	return subdomain
+	return flags
 }
 
-func handleAuth(args []string) {
-	if len(args) != 1 {
-		log.Fatalf("invalid command, jprq --help")
-	}
+func handleAuth(token string) {
 	config := Config{
 		Local: struct {
 			AuthToken string `json:"auth_token"`
-		}{args[0]},
+		}{token},
 	}
 	if err := config.Write(); err != nil {
 		log.Fatalf("error writing config: %s", err)
@@ -117,17 +128,27 @@ func handleAuth(args []string) {
 	os.Exit(0)
 }
 
-func canReachServer(port int) bool {
-	address := fmt.Sprintf("127.0.0.1:%d", port)
-	conn, err := net.DialTimeout("tcp", address, 512*time.Millisecond)
+func handleServe(dir string) (string, int) {
+	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return false
+		log.Fatalf("no such dir %s", dir)
 	}
-	conn.Close()
-	return true
-}
 
-func printVersion() {
-	log.Printf("v%s", version)
-	os.Exit(0)
+	handler := http.FileServer(http.Dir(dir))
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		log.Fatalf("failed to start server: %s", err)
+	}
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() {
+		if err := http.Serve(listener, handler); err != nil {
+			log.Fatalf("cannot serve files on %s: %s", dir, err)
+		}
+	}()
+
+	time.AfterFunc(600*time.Millisecond, func() {
+		log.Println("Serving: \t", dir)
+	})
+	return "http", port
 }

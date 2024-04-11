@@ -34,6 +34,9 @@ func parseHost(r io.Reader) (string, []byte, error) {
 	text := string(buffer)
 	left := strings.Index(text, "Host: ")
 	if left < 0 {
+		left = strings.Index(text, "host: ")
+	}
+	if left < 0 {
 		return "", buffer, fmt.Errorf("no host detected")
 	}
 	text = text[left+6:] // drops chars "Host: "
@@ -47,12 +50,6 @@ func parseHost(r io.Reader) (string, []byte, error) {
 func writeResponse(conn io.WriteCloser, statusCode int, status string, message string) {
 	response := fmt.Sprintf(
 		"HTTP/1.1 %d %s\r\nContent-Length: %d\r\n\r\n%s", statusCode, status, len(message), message)
-	conn.Write([]byte(response))
-	conn.Close()
-}
-
-func writeRedirectResponse(conn io.WriteCloser, location string) {
-	response := fmt.Sprintf("HTTP/1.1 302 Found\r\nLocation: %s\r\n\r\n", location)
 	conn.Write([]byte(response))
 	conn.Close()
 }
