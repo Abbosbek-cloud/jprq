@@ -109,10 +109,10 @@ func (j *Jprq) serveEventConn(conn net.Conn) error {
 	}
 	user, err := j.authenticator.Authenticate(request.AuthToken)
 	if err != nil {
-		return events.WriteError(conn, "authentication failed")
+		return events.WriteError(conn, "authentication failed %s", "\n\tobtain auth token from https://jprq.io/auth\n")
 	}
 
-	if _, found := j.allowedUsers[user.Login]; !found {
+	if _, found := j.allowedUsers[user.Login]; !found && !user.Allowed {
 		return events.WriteError(conn, "jprq is now invite-only service %s\n", "\n\tbuy membership - https://buymeacoffee.com/azimjon \n")
 	}
 	if len(j.userTunnels[user.Login]) >= j.config.MaxTunnelsPerUser {
@@ -186,7 +186,7 @@ func (j *Jprq) serveEventConn(conn net.Conn) error {
 		if _, err := conn.Read(buffer); err == io.EOF {
 			break
 		}
-		if _, found := j.allowedUsers[user.Login]; !found {
+		if _, found := j.allowedUsers[user.Login]; !found && !user.Allowed {
 			break
 		}
 	}
